@@ -23,6 +23,9 @@ export default function AdminPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingField, setEditingField] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [attemptCount, setAttemptCount] = useState(0);
+
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [newComplaint, setNewComplaint] = useState<Omit<Complaint, 'id'>>({
@@ -52,10 +55,59 @@ export default function AdminPanel() {
   // Authentication
   const handleAuthSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (attemptCount >= 3) {
+      setErrorMessage("Too many failed attempts. Please try again later.");
+      return;
+    }
+  
     if (password === "urbannav@2025") {
       setIsAuthenticated(true);
+      setErrorMessage("");
+      setAttemptCount(0);
+    } else {
+      setAttemptCount(prev => prev + 1);
+      setErrorMessage(
+        `Invalid password (${attemptCount + 1}/3 attempts used)`
+      );
     }
   };
+
+  // Authentication check
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#0E0024] flex items-center justify-center">
+        <div className="bg-white/10 p-8 rounded-xl border border-white/20 backdrop-blur-lg">
+          <h2 className="text-2xl font-bold mb-4">Admin Authentication</h2>
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white"
+              placeholder="Enter Admin Password"
+            />
+            {errorMessage && (
+              <div className="text-red-400 text-sm mb-2 animate-pulse">
+                ⚠️ {errorMessage}
+              </div>
+            )}
+            <button
+              type="submit"
+              className={`w-full ${
+                attemptCount >= 3 
+                  ? 'bg-gray-600 cursor-not-allowed' 
+                  : 'bg-purple-600 hover:bg-purple-700'
+              } text-white font-medium py-3 rounded-lg transition-colors`}
+              disabled={attemptCount >= 3}
+            >
+              {attemptCount >= 3 ? 'Access Locked' : 'Access Admin Panel'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   // Load complaints
   useEffect(() => {
@@ -138,8 +190,6 @@ export default function AdminPanel() {
 
     const aValue = a[sortConfig.key as keyof Complaint];
     const bValue = b[sortConfig.key as keyof Complaint];
-
-    // const bValue = b[sortConfig.key];
     
     if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
     if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
@@ -156,31 +206,6 @@ export default function AdminPanel() {
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentItems = filteredItems.slice(indexOfFirstItem, indexOfLastItem);
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-[#0E0024] flex items-center justify-center">
-        <div className="bg-white/10 p-8 rounded-xl border border-white/20 backdrop-blur-lg">
-          <h2 className="text-2xl font-bold mb-4">Admin Authentication</h2>
-          <form onSubmit={handleAuthSubmit} className="space-y-4">
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white"
-              placeholder="Enter Admin Password"
-            />
-            <button
-              type="submit"
-              className="w-full bg-purple-600 hover:bg-purple-700 text-white font-medium py-3 rounded-lg transition-colors"
-            >
-              Access Admin Panel
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#0E0024] bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#3C1B6B] to-[#0E0024] text-white">

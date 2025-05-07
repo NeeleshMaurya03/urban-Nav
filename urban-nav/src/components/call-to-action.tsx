@@ -5,7 +5,7 @@ import BackgroundStars from "@/assets/stars.png";
 import BackgroundGrid from "@/assets/grid-lines.png";
 import { motion, useMotionTemplate, useMotionValue, useScroll, useTransform } from "framer-motion";
 import { RefObject, useEffect, useRef } from "react";
-
+import Link from "next/link";
 // Custom Hook for Relative Mouse Position
 const useRelativeMousePosition = (to: RefObject<HTMLElement>) => {
     const mouseX = useMotionValue(0);
@@ -61,7 +61,9 @@ export function CallToAction() {
                             Manage urban traffic flow efficiently with intuitive AI tools.
                         </p>
                         <div className="flex justify-center mt-8">
-                            <ActionButton label="Request a Demo" />
+                        <Link href="#features">
+                        <ActionButton label={"Explore Features"} />
+                    </Link>
                         </div>
                     </div>
                 </motion.div>

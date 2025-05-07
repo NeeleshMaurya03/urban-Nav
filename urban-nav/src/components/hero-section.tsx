@@ -4,7 +4,7 @@ import { ActionButton } from "./action-button";
 import BackgroundStars from "@/assets/stars.png";
 import {motion, useScroll, useTransform} from "framer-motion";
 import {useRef} from "react";
-
+import Link from "next/link";
 export function HeroSection() {
 
     const sectionRef = useRef<HTMLElement>(null);
@@ -54,7 +54,9 @@ export function HeroSection() {
                     <h1 className={"text-8xl md:text-[168px] md:leading-none font-semibold bg-white tracking-tighter bg-[radial-gradient(100%_100%_at_top_left,white,white,rgb(74,32,138,0.5))] bg-clip-text text-transparent text-center"}>Urban Nav</h1>
                     <p className={"text-lg md:text-xl max-w-xl mx-auto text-white/70 mt-5 text-center"}>Optimize urban traffic effortlessly with AI, where smart technology meets user-friendly traffic management tools.</p>
                     <div className={"flex justify-center mt-5"}>
-                        <ActionButton label={"Request a Demo"} />
+                    <Link href="#features">
+                        <ActionButton label={"Explore Features"} />
+                    </Link>
                     </div>
                 </div>
             </motion.section>
