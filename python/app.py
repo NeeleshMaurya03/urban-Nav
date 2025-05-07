@@ -9,6 +9,8 @@ import os
 import uuid
 import subprocess
 import asyncio
+import base64
+import imutils
 
 app = FastAPI()
 
@@ -21,62 +23,146 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Helmet & Plate Detection Setup ---
-net = cv2.dnn.readNet("yolov3-spp.weights", "yolov3-spp.cfg")
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+# --- Configuration ---
+PORT = 5000
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# --- Initialize Models ---
+helmet_net = cv2.dnn.readNet("yolov3-spp.weights", "yolov3-spp.cfg")
+layer_names = helmet_net.getLayerNames()
+output_layers = [layer_names[i - 1] for i in helmet_net.getUnconnectedOutLayers()]
 with open("coco.names", "r") as f:
     classes = [line.strip() for line in f.readlines()]
-reader = easyocr.Reader(['en'], gpu=False)
+    
+ocr_reader = easyocr.Reader(['en'], gpu=False)
 
+# --- Utility Functions ---
 def detect_objects(img):
-    h, w, _ = img.shape
+    height, width = img.shape[:2]
     blob = cv2.dnn.blobFromImage(img, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-    net.setInput(blob)
-    outs = net.forward(output_layers)
+    helmet_net.setInput(blob)
+    outs = helmet_net.forward(output_layers)
+    
     boxes, confidences, class_ids = [], [], []
     for out in outs:
-        for det in out:
-            scores = det[5:]
-            cid = int(np.argmax(scores))
-            conf = float(scores[cid])
-            if conf > 0.5:
-                cx, cy, ww, hh = det[0]*w, det[1]*h, det[2]*w, det[3]*h
-                x, y = int(cx - ww/2), int(cy - hh/2)
-                boxes.append([x, y, int(ww), int(hh), int(cx), int(cy)])
-                confidences.append(conf)
-                class_ids.append(cid)
+        for detection in out:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.5:
+                center_x = int(detection[0] * width)
+                center_y = int(detection[1] * height)
+                w = int(detection[2] * width)
+                h = int(detection[3] * height)
+                x = int(center_x - w / 2)
+                y = int(center_y - h / 2)
+                boxes.append([x, y, w, h, center_x, center_y])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
     return boxes, confidences, class_ids
 
-def recognize_number_plate(img):
-    res = reader.readtext(img)
-    return [text for _, text, prob in res if len(text)>4 and prob>0.5]
+# --- Simplified Helmet Detection Endpoint ---
+@app.post("/detect-helmet")
+async def detect_helmet(file: UploadFile = File(...)):
+    try:
+        file_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.jpg")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        img = cv2.imread(file_path)
+        if img is None:
+            os.remove(file_path)
+            raise HTTPException(400, "Invalid image file")
 
-# --- Endpoint: Helmet & Plate Detection ---
-@app.post("/detect-helmet-plate")
-async def detect_helmet_plate(file: UploadFile = File(...)):
-    tmp_in = f"tmp_{uuid.uuid4().hex}.jpg"
-    with open(tmp_in, "wb") as buf:
-        shutil.copyfileobj(file.file, buf)
-    img = cv2.imread(tmp_in)
-    if img is None:
-        os.remove(tmp_in)
-        raise HTTPException(400, "Invalid image file")
+        # Helmet detection logic
+        boxes, confs, cids = detect_objects(img)
+        person = any(classes[c] == 'person' for c in cids)
+        moto = any(classes[c] == 'motorcycle' for c in cids)
+        helmet = any(classes[c] == 'helmet' for c in cids)
+        
+        # Determine compliance status
+        helmet_status = "✅ Helmet Compliant" 
+        if person and moto:
+            helmet_status = "⚠️ Helmet Violation" if not helmet else "✅ Helmet Compliant"
 
-    boxes, confs, cids = detect_objects(img)
-    person = any(classes[c]=='person' for c in cids)
-    moto = any(classes[c]=='motorcycle' for c in cids)
-    helmet_ok = not (person and moto)
-    plates = recognize_number_plate(img)
-    dets = [ {"class": classes[cids[i]], "box": boxes[i][:4], "confidence": confs[i]} for i in range(len(boxes)) ]
+        os.remove(file_path)
+        return {"status": {"helmet": helmet_status}}
 
-    os.remove(tmp_in)
-    return {"helmet_on_motorcycle": helmet_ok, "plates": plates, "detections": dets}
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(500, str(e))
 
-# --- Endpoint: Vehicle Counting ---
+# --- License Plate Detection Endpoint ---
+@app.post("/detect-plate")
+async def detect_plate(file: UploadFile = File(...)):
+    try:
+        file_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.jpg")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        img = cv2.imread(file_path)
+        if img is None:
+            os.remove(file_path)
+            raise HTTPException(400, "Invalid image file")
+
+        plate_text = "🚫 No plate detected"
+        img_base64 = None
+
+        try:
+            # Plate detection pipeline
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            bfilter = cv2.bilateralFilter(gray, 11, 17, 17)
+            edged = cv2.Canny(bfilter, 30, 200)
+            
+            contours = imutils.grab_contours(
+                cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            )
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+
+            plate = next(
+                (approx for contour in contours 
+                 for approx in [cv2.approxPolyDP(contour, 0.018*cv2.arcLength(contour,True), True)]
+                 if len(approx) == 4), None
+            )
+
+            if plate is not None:
+                # OCR processing
+                x,y = np.where(mask := cv2.drawContours(
+                    np.zeros(gray.shape, np.uint8), [plate], -1, 255, -1) == 255
+                )
+                cropped = gray[np.min(x):np.max(x)+1, np.min(y):np.max(y)+1]
+                
+                plate_results = ocr_reader.readtext(cropped)
+                valid_plates = [text for _, text, prob in plate_results if prob > 0.5 and len(text) > 4]
+                plate_text = "🚗 " + " ".join(valid_plates) if valid_plates else "🚫 Invalid plate"
+
+                # Image annotation
+                cv2.rectangle(img, tuple(plate[0][0]), tuple(plate[2][0]), (0,255,0), 3)
+                cv2.putText(img, plate_text, (plate[0][0][0], plate[1][0][1]+60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+                _, buffer = cv2.imencode('.jpg', img)
+                img_base64 = base64.b64encode(buffer).decode()
+
+        except Exception as e:
+            plate_text = f"⚠️ Plate detection error: {str(e)}"
+
+        os.remove(file_path)
+        return {
+            "status": {"plate": plate_text},
+            "processed_image": img_base64
+        }
+
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(500, str(e))
+
+# --- Vehicle Counting Endpoint ---
 @app.post("/count-vehicles")
 async def count_vehicles(file: UploadFile = File(...)):
-    tmp_vid = f"tmp_{uuid.uuid4().hex}.mp4"
+    tmp_vid = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.mp4")
     with open(tmp_vid, "wb") as buf:
         shutil.copyfileobj(file.file, buf)
 
@@ -89,7 +175,7 @@ async def count_vehicles(file: UploadFile = File(...)):
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out_path = f"out_{uuid.uuid4().hex}.mp4"
+    out_path = os.path.join(UPLOAD_FOLDER, f"out_{uuid.uuid4().hex}.mp4")
     writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
 
     line_y = h - 150
@@ -142,9 +228,8 @@ async def count_vehicles(file: UploadFile = File(...)):
 async def websocket_vehicle_count(websocket: WebSocket):
     await websocket.accept()
     try:
-        # Receive video file through WebSocket
         video_bytes = await websocket.receive_bytes()
-        file_path = f"tmp_{uuid.uuid4().hex}.mp4"
+        file_path = os.path.join(UPLOAD_FOLDER, f"temp_{uuid.uuid4().hex}.mp4")
         
         with open(file_path, "wb") as f:
             f.write(video_bytes)
@@ -200,11 +285,9 @@ async def websocket_vehicle_count(websocket: WebSocket):
             cv2.putText(frame, f"Cars: {counts['car']}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             cv2.putText(frame, f"Buses: {counts['bus']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             
-            # Encode frame to JPEG
             _, buffer = cv2.imencode('.jpg', frame)
             jpeg_bytes = buffer.tobytes()
             
-            # Send frame and counts through WebSocket
             await websocket.send_json({"counts": counts})
             await websocket.send_bytes(jpeg_bytes)
             await asyncio.sleep(frame_delay)
@@ -219,9 +302,9 @@ async def websocket_vehicle_count(websocket: WebSocket):
 # --- Endpoint: Run Pygame Simulation ---
 @app.get("/run-simulation")
 async def run_simulation():
-    # Launch the traffic_simulation.py script
     subprocess.Popen(["python", "traffic_simulation.py"], shell=False)
     return JSONResponse({"message": "Traffic simulation started"})
 
-# To run server:
-# uvicorn app:app --reload --host 0.0.0.0 --port 5000
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

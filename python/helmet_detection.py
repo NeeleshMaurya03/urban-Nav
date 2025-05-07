@@ -2,12 +2,12 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import numpy as np
-import easyocr
+from typing import List
 import io
 
 app = FastAPI()
 
-# Allow CORS for frontend
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,77 +16,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load YOLO model once at startup
-def load_yolo():
-    net = cv2.dnn.readNet("yolov3-spp.weights", "yolov3-spp.cfg")
-    layer_names = net.getLayerNames()
-    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
-    return net, output_layers
+# Load specialized helmet detection model (replace with your trained model)
+helmet_net = cv2.dnn.readNet("helmet_detection.weights", "helmet_detection.cfg")
+with open("helmet_classes.txt", "r") as f:
+    helmet_classes = [line.strip() for line in f.readlines()]
 
-net, output_layers = load_yolo()
-with open("coco.names", "r") as f:
-    classes = [line.strip() for line in f.readlines()]
+# Configuration for optimal accuracy
+CONFIDENCE_THRESHOLD = 0.7
+NMS_THRESHOLD = 0.4
+INPUT_SIZE = (640, 640)
 
-reader = easyocr.Reader(['en'], gpu=False)
-
-# Utility: detect objects
-
-def detect_objects(img):
-    height, width, _ = img.shape
-    blob = cv2.dnn.blobFromImage(img, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-    net.setInput(blob)
-    outputs = net.forward(output_layers)
-
+def detect_helmets(img: np.ndarray) -> List[dict]:
+    height, width = img.shape[:2]
+    
+    # Preprocess image
+    blob = cv2.dnn.blobFromImage(
+        img, 
+        1/255.0, 
+        INPUT_SIZE, 
+        swapRB=True, 
+        crop=False
+    )
+    
+    # Perform detection
+    helmet_net.setInput(blob)
+    outputs = helmet_net.forward(helmet_net.getUnconnectedOutLayersNames())
+    
+    # Process detections
     boxes, confidences, class_ids = [], [], []
-    for out in outputs:
-        for det in out:
-            scores = det[5:]
-            cid = np.argmax(scores)
-            conf = float(scores[cid])
-            if conf > 0.5:
-                cx, cy, w, h = (det[0]*width, det[1]*height, det[2]*width, det[3]*height)
-                x, y = int(cx - w/2), int(cy - h/2)
+    
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            
+            if confidence > CONFIDENCE_THRESHOLD:
+                # Scale bounding box coordinates
+                box = detection[0:4] * np.array([width, height, width, height])
+                (x, y, w, h) = box.astype("int")
+                
+                # Convert to proper box format
+                x = int(x - (w / 2))
+                y = int(y - (h / 2))
+                
                 boxes.append([x, y, int(w), int(h)])
-                confidences.append(conf)
-                class_ids.append(cid)
-    return boxes, confidences, class_ids
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+    
+    # Apply Non-Maximum Suppression
+    indices = cv2.dnn.NMSBoxes(
+        boxes, 
+        confidences, 
+        CONFIDENCE_THRESHOLD,
+        NMS_THRESHOLD
+    )
+    
+    results = []
+    if len(indices) > 0:
+        for i in indices.flatten():
+            results.append({
+                "class": helmet_classes[class_ids[i]],
+                "confidence": confidences[i],
+                "box": boxes[i]
+            })
+    
+    return results
 
-# Utility: recognize number plates
-
-def recognize_number_plate(img):
-    results = reader.readtext(img)
-    plates = [text for _, text, prob in results if len(text)>4 and prob>0.5]
-    return plates
-
-# API endpoint
-@app.post("/detect-helmet-plate")
-async def detect_helmet_plate(file: UploadFile = File(...)):
-    # read image bytes
-    content = await file.read()
-    np_arr = np.frombuffer(content, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
-    # object detection
-    boxes, confidences, class_ids = detect_objects(img)
-
-    # flags
-    person, moto = False, False
-    for i, cid in enumerate(class_ids):
-        if classes[cid] == 'person': person = True
-        if classes[cid] == 'motorcycle': moto = True
-
-    helmet_ok = person and moto  # simplistic: if any person & motorcycle detected
-    plates = recognize_number_plate(img)
-
-    return {
-        "helmet_on_motorcycle": helmet_ok,
-        "plates": plates,
-        "detections": [
-            {"class": classes[cid], "box": boxes[i], "confidence": confidences[i]}
-            for i, cid in enumerate(class_ids)
-        ]
-    }
+@app.post("/detect-helmet")
+async def detect_helmet(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        np_arr = np.frombuffer(content, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(400, "Invalid image file")
+        
+        # Convert to RGB for better accuracy
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Perform detection
+        detections = detect_helmets(img)
+        
+        # Filter only helmet detections
+        helmets = [d for d in detections if d["class"] == "helmet"]
+        
+        return {
+            "helmet_detected": len(helmets) > 0,
+            "total_helmets": len(helmets),
+            "detections": helmets,
+            "confidence": max([d["confidence"] for d in helmets], default=0)
+        }
+    
+    except Exception as e:
+        raise HTTPException(500, f"Processing error: {str(e)}")
 
 # To run: uvicorn app:app --reload

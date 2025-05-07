@@ -313,9 +313,19 @@ function ImageDetector({ mode }: { mode: "anpr" | "helmet" }) {
     if (!file) return;
     setLoading(true);
     try {
-      const form = new FormData(); 
+      const form = new FormData();
       form.append("file", file);
-      const res = await fetch("http://localhost:5000/detect-helmet-plate", { method: "POST", body: form });
+      
+      // Use separate endpoints based on detection mode
+      const endpoint = mode === "anpr" 
+        ? "http://localhost:5000/detect-plate"
+        : "http://localhost:5000/detect-helmet";
+
+      const res = await fetch(endpoint, { 
+        method: "POST", 
+        body: form 
+      });
+      
       setResult(await res.json());
     } finally {
       setLoading(false);
@@ -355,9 +365,20 @@ function ImageDetector({ mode }: { mode: "anpr" | "helmet" }) {
       </div>
       {result && (
         <div className="bg-black/30 backdrop-blur-lg rounded-xl p-4 border border-white/20">
-          <pre className="text-sm text-white/80 whitespace-pre-wrap">
-            {JSON.stringify(result, null, 2)}
-          </pre>
+          {mode === "anpr" && result.processed_image && (
+            <img 
+              src={`data:image/jpeg;base64,${result.processed_image}`}
+              alt="Processed plate"
+              className="mb-4 rounded-lg"
+            />
+          )}
+          <div className="text-sm text-white/80 space-y-2">
+            <p className="font-medium">
+              {mode === "anpr" ? 
+                `Detected Plate: ${result.status.plate}` : 
+                `Safety Status: ${result.status.helmet}`}
+            </p>
+          </div>
         </div>
       )}
     </div>

@@ -153,8 +153,8 @@ traitlets==5.14.3
 typing-inspection==0.4.0
 typing_extensions==4.12.2
 tzdata==2025.1
-# Editable install with no version control (ultralytics==8.0.3)
--e c:\users\dell\onedrive\desktop\final project\backend\yolov8-deepsort-object-tracking
+ultralytics==8.0.3
+supervision==0.19.0
 ultralytics-thop==2.0.14
 urllib3==2.3.0
 uvicorn==0.34.2
